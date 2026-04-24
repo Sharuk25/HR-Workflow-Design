@@ -1,0 +1,87 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    // Primitives
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    
+    function isAdmin() {
+      return request.auth != null && request.auth.token.email == 'sharukshaik786786@gmail.com';
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    // User Entity Rules
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'createdAt']) && data.keys().size() == 2
+        && data.email is string && data.email.size() <= 200
+        && data.createdAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() 
+        && request.auth.uid == userId 
+        && isValidId(userId)
+        && isValidUser(incoming())
+        && incoming().createdAt == request.time
+        && incoming().email == request.auth.token.email;
+      allow update: if isSignedIn()
+        && (request.auth.uid == userId || isAdmin())
+        && isValidUser(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly([]) // immutable for now
+        && incoming().createdAt == existing().createdAt
+        && incoming().email == existing().email;
+      allow delete: if isAdmin();
+    }
+
+    // Workflow Entity Rules
+    function isValidWorkflow(data) {
+      // Very basic validation, since we might have arbitrary nodes and edges
+      return data.keys().hasAll(['userId', 'nodes', 'edges', 'createdAt', 'updatedAt']) 
+        && data.keys().size() == 5
+        && data.userId is string && data.userId.size() <= 128
+        && data.nodes is list
+        && data.edges is list
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /workflows/{workflowId} {
+      // Only the owner or an admin can read the workflow.
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      // Explicit list validation.
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      
+      allow create: if isSignedIn() 
+        && isValidId(workflowId)
+        && isValidWorkflow(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().userId == request.auth.uid;
+        
+      allow update: if isSignedIn() 
+        && (existing().userId == request.auth.uid || isAdmin())
+        && isValidWorkflow(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['nodes', 'edges', 'updatedAt'])
+        && incoming().updatedAt == request.time
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt;
+        
+      allow delete: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+    }
+  }
+}
